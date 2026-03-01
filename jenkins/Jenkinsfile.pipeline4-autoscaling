@@ -9,16 +9,18 @@ pipeline {
   parameters {
     choice(name: 'SERVICE', choices: ['orders', 'payments', 'users', 'inventory', 'gateway'],
            description: 'Which service MIG to operate')
+
     choice(name: 'MODE', choices: ['autoscaler_on', 'autoscaler_off_manual'],
            description: 'Keep autoscaler ON (edit min/max) OR turn it OFF and set manual size')
+
     string(name: 'REGION', defaultValue: 'us-central1', description: 'Region of the regional MIG')
 
-    // For autoscaler_on
-    string(name: 'MIN', defaultValue: '1', description: 'Autoscaler min replicas (MODE=autoscaler_on)')
-    string(name: 'MAX', defaultValue: '3', description: 'Autoscaler max replicas (MODE=autoscaler_on)')
+    // MODE=autoscaler_on
+    string(name: 'MIN', defaultValue: '1', description: 'Autoscaler min replicas')
+    string(name: 'MAX', defaultValue: '3', description: 'Autoscaler max replicas')
 
-    // For autoscaler_off_manual
-    string(name: 'SIZE', defaultValue: '2', description: 'Manual MIG size (MODE=autoscaler_off_manual)')
+    // MODE=autoscaler_off_manual
+    string(name: 'SIZE', defaultValue: '2', description: 'Manual MIG size when autoscaler is OFF')
 
     booleanParam(name: 'WAIT_STABLE', defaultValue: true, description: 'Wait until MIG is stable at the end')
   }
@@ -58,6 +60,7 @@ PY
             ).trim()
 
             env.MIG_NAME = mig
+
             // export params so /bin/sh can read them safely (set -u)
             env.SERVICE = params.SERVICE
             env.REGION  = params.REGION
@@ -79,12 +82,14 @@ PY
       steps {
         sh '''
           set -eu
-          echo "Setting autoscaler min=${MIN} max=${MAX} for ${MIG_NAME}..."
-          gcloud compute autoscalers update "${SERVICE}-as" \
+          echo "Enabling autoscaling for ${MIG_NAME} with min=${MIN} max=${MAX}..."
+          gcloud compute instance-groups managed set-autoscaling "${MIG_NAME}" \
             --region "${REGION}" \
+            --mode on \
             --min-num-replicas "${MIN}" \
             --max-num-replicas "${MAX}" \
-            --mode on
+            --cool-down-period 60 \
+            --target-cpu-utilization 0.6
         '''
       }
     }
@@ -94,13 +99,13 @@ PY
       steps {
         sh '''
           set -eu
-          echo "Turning autoscaler OFF for ${MIG_NAME}-as..."
-          gcloud compute autoscalers update "${SERVICE}-as" \
+          echo "Disabling autoscaling for ${MIG_NAME}..."
+          gcloud compute instance-groups managed set-autoscaling "${MIG_NAME}" \
             --region "${REGION}" \
             --mode off
 
-          echo "Resizing MIG to fixed size=${SIZE}..."
-          gcloud compute instance-groups managed resize "${SERVICE}" \
+          echo "Resizing MIG ${MIG_NAME} to fixed size=${SIZE}..."
+          gcloud compute instance-groups managed resize "${MIG_NAME}" \
             --region "${REGION}" \
             --size "${SIZE}"
         '''
@@ -112,7 +117,7 @@ PY
       steps {
         sh '''
           set -eu
-          echo "Waiting for MIG to become stable..."
+          echo "Waiting for MIG ${MIG_NAME} to become stable..."
           gcloud compute instance-groups managed wait-until "${MIG_NAME}" \
             --region "${REGION}" \
             --stable
@@ -124,12 +129,14 @@ PY
       steps {
         sh '''
           set -eu
-          echo "Autoscaler:"
-          gcloud compute autoscalers describe "${SERVICE}-as" --region "${REGION}" \
-            --format="yaml(autoscalingPolicy,status)"
+          echo "Autoscaling policy (from MIG):"
+          gcloud compute instance-groups managed describe "${MIG_NAME}" \
+            --region "${REGION}" \
+            --format="yaml(autoscaler.autoscalingPolicy,autoscaler.status)"
 
-          echo "MIG size:"
-          gcloud compute instance-groups managed describe "${SERVICE}" --region "${REGION}" \
+          echo "MIG target size:"
+          gcloud compute instance-groups managed describe "${MIG_NAME}" \
+            --region "${REGION}" \
             --format="value(targetSize)"
         '''
       }
