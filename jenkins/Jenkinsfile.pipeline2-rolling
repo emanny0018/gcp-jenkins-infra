@@ -63,17 +63,20 @@ PY
     }
 
     stage('Rolling action') {
-      steps {
-        sh '''
-          set -eu
-          echo "Starting rolling ${ACTION} for ${MIG_NAME}..."
-          gcloud compute instance-groups managed rolling-action ${ACTION} "${MIG_NAME}" \
-            --region "${REGION}" \
-            --max-surge "${MAX_SURGE}" \
-            --max-unavailable "${MAX_UNAVAILABLE}"
-        '''
-      }
+  steps {
+    script {
+      env.ROLL_ACTION = params.ACTION
     }
+    sh '''
+      set -eu
+      echo "Starting rolling ${ROLL_ACTION} for ${MIG_NAME}..."
+      gcloud compute instance-groups managed rolling-action ${ROLL_ACTION} "${MIG_NAME}" \
+        --region "${REGION}" \
+        --max-surge "${MAX_SURGE}" \
+        --max-unavailable "${MAX_UNAVAILABLE}"
+    '''
+  }
+}
 
     stage('Wait until stable') {
       when { expression { return params.WAIT_STABLE } }
