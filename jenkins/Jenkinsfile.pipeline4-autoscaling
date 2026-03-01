@@ -58,6 +58,13 @@ PY
             ).trim()
 
             env.MIG_NAME = mig
+            // export params so /bin/sh can read them safely (set -u)
+            env.SERVICE = params.SERVICE
+            env.REGION  = params.REGION
+            env.MIN     = params.MIN
+            env.MAX     = params.MAX
+            env.SIZE    = params.SIZE
+
             echo "SERVICE  = ${params.SERVICE}"
             echo "MODE     = ${params.MODE}"
             echo "REGION   = ${params.REGION}"
@@ -73,7 +80,7 @@ PY
         sh '''
           set -eu
           echo "Setting autoscaler min=${MIN} max=${MAX} for ${MIG_NAME}..."
-          gcloud compute autoscalers update "${MIG_NAME}-as" \
+          gcloud compute autoscalers update "${SERVICE}-as" \
             --region "${REGION}" \
             --min-num-replicas "${MIN}" \
             --max-num-replicas "${MAX}" \
@@ -88,12 +95,12 @@ PY
         sh '''
           set -eu
           echo "Turning autoscaler OFF for ${MIG_NAME}-as..."
-          gcloud compute autoscalers update "${MIG_NAME}-as" \
+          gcloud compute autoscalers update "${SERVICE}-as" \
             --region "${REGION}" \
             --mode off
 
           echo "Resizing MIG to fixed size=${SIZE}..."
-          gcloud compute instance-groups managed resize "${MIG_NAME}" \
+          gcloud compute instance-groups managed resize "${SERVICE}" \
             --region "${REGION}" \
             --size "${SIZE}"
         '''
@@ -118,11 +125,11 @@ PY
         sh '''
           set -eu
           echo "Autoscaler:"
-          gcloud compute autoscalers describe "${MIG_NAME}-as" --region "${REGION}" \
+          gcloud compute autoscalers describe "${SERVICE}-as" --region "${REGION}" \
             --format="yaml(autoscalingPolicy,status)"
 
           echo "MIG size:"
-          gcloud compute instance-groups managed describe "${MIG_NAME}" --region "${REGION}" \
+          gcloud compute instance-groups managed describe "${SERVICE}" --region "${REGION}" \
             --format="value(targetSize)"
         '''
       }
