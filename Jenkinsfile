@@ -3,8 +3,6 @@ pipeline {
 
   options {
     timestamps()
-    ansiColor('xterm')
-    // prevent hangs (e.g., waiting for stable forever)
     timeout(time: 15, unit: 'MINUTES')
   }
 
