@@ -1,0 +1,103 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    timeout(time: 20, unit: 'MINUTES')
+  }
+
+  parameters {
+    choice(name: 'SERVICE', choices: ['orders', 'payments', 'users', 'inventory', 'gateway'],
+           description: 'Which service MIG to operate')
+    choice(name: 'ACTION', choices: ['restart', 'replace'],
+           description: 'restart = restart instances, replace = recreate instances from template')
+    string(name: 'REGION', defaultValue: 'us-central1', description: 'Region of the regional MIG')
+    string(name: 'MAX_SURGE', defaultValue: '1', description: 'How many extra instances can be added during action')
+    string(name: 'MAX_UNAVAILABLE', defaultValue: '0', description: 'How many instances can be down at once')
+    booleanParam(name: 'WAIT_STABLE', defaultValue: true, description: 'Wait until MIG is stable at the end')
+  }
+
+  environment {
+    TF_DIR = "terraform"
+  }
+
+  stages {
+    stage('Read Terraform outputs') {
+      steps {
+        dir("${env.TF_DIR}") {
+          sh '''
+            set -eu
+            terraform init -input=false
+            terraform output -json > tf_outputs.json
+          '''
+        }
+      }
+    }
+
+    stage('Resolve targets') {
+      steps {
+        dir("${env.TF_DIR}") {
+          script {
+            def mig = sh(
+              script: """
+                python3 - <<'PY'
+import json
+svc = "${params.SERVICE}"
+with open("tf_outputs.json") as f:
+    out = json.load(f)
+print(out["mig_names"]["value"][svc])
+PY
+              """,
+              returnStdout: true
+            ).trim()
+
+            env.MIG_NAME = mig
+
+            echo "SERVICE  = ${params.SERVICE}"
+            echo "ACTION   = ${params.ACTION}"
+            echo "REGION   = ${params.REGION}"
+            echo "MIG_NAME = ${env.MIG_NAME}"
+          }
+        }
+      }
+    }
+
+    stage('Rolling action') {
+      steps {
+        sh '''
+          set -eu
+          echo "Starting rolling ${ACTION} for ${MIG_NAME}..."
+          gcloud compute instance-groups managed rolling-action ${ACTION} "${MIG_NAME}" \
+            --region "${REGION}" \
+            --max-surge "${MAX_SURGE}" \
+            --max-unavailable "${MAX_UNAVAILABLE}"
+        '''
+      }
+    }
+
+    stage('Wait until stable') {
+      when { expression { return params.WAIT_STABLE } }
+      steps {
+        sh '''
+          set -eu
+          echo "Waiting for MIG to become stable..."
+          gcloud compute instance-groups managed wait-until "${MIG_NAME}" \
+            --region "${REGION}" \
+            --stable
+        '''
+      }
+    }
+
+    stage('Verify instances') {
+      steps {
+        sh '''
+          set -eu
+          echo "Instances in MIG:"
+          gcloud compute instance-groups managed list-instances "${MIG_NAME}" \
+            --region "${REGION}" \
+            --format="table(name,zone,status,instanceStatus,healthState,currentAction)"
+        '''
+      }
+    }
+  }
+}
