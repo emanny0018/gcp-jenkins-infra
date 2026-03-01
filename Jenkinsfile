@@ -29,7 +29,7 @@ pipeline {
       steps {
         dir("${env.TF_DIR}") {
           sh '''
-            set -euo pipefail
+            set -eu
             terraform init -input=false
             terraform output -json > tf_outputs.json
           '''
@@ -75,7 +75,7 @@ PY
       when { expression { params.ACTION == 'detach' } }
       steps {
         sh '''
-          set -euo pipefail
+          set -eu
           echo "Detaching autohealing from ${MIG_NAME}..."
           gcloud compute instance-groups managed update "${MIG_NAME}" \
             --region "${REGION}" \
@@ -88,7 +88,7 @@ PY
       when { expression { params.ACTION == 'attach' } }
       steps {
         sh '''
-          set -euo pipefail
+          set -eu
           echo "Waiting until MIG is stable before attaching autohealing..."
           gcloud compute instance-groups managed wait-until "${MIG_NAME}" \
             --region "${REGION}" \
@@ -106,7 +106,7 @@ PY
     stage('Verify') {
       steps {
         sh '''
-          set -euo pipefail
+          set -eu
           echo "Autohealing policies now:"
           gcloud compute instance-groups managed describe "${MIG_NAME}" \
             --region "${REGION}" \
