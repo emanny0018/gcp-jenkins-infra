@@ -7,22 +7,29 @@ pipeline {
   }
 
   parameters {
-    choice(name: 'SERVICE', choices: ['orders', 'payments', 'users', 'inventory', 'gateway'],
+    choice(name: 'SERVICE',
+           choices: ['orders', 'payments', 'users', 'inventory', 'gateway'],
            description: 'Which service MIG to operate')
 
-    choice(name: 'MODE', choices: ['autoscaler_on', 'autoscaler_off_manual'],
-           description: 'Keep autoscaler ON (edit min/max) OR turn it OFF and set manual size')
+    choice(name: 'MODE',
+           choices: ['autoscaler_on', 'autoscaler_off_manual'],
+           description: 'Enable autoscaler OR delete it and use manual size')
 
-    string(name: 'REGION', defaultValue: 'us-central1', description: 'Region of the regional MIG')
+    string(name: 'REGION', defaultValue: 'us-central1',
+           description: 'Region of the regional MIG')
 
-    // MODE=autoscaler_on
-    string(name: 'MIN', defaultValue: '1', description: 'Autoscaler min replicas')
-    string(name: 'MAX', defaultValue: '3', description: 'Autoscaler max replicas')
+    // Autoscaler mode
+    string(name: 'MIN', defaultValue: '1',
+           description: 'Autoscaler min replicas')
+    string(name: 'MAX', defaultValue: '3',
+           description: 'Autoscaler max replicas')
 
-    // MODE=autoscaler_off_manual
-    string(name: 'SIZE', defaultValue: '2', description: 'Manual MIG size when autoscaler is OFF')
+    // Manual mode
+    string(name: 'SIZE', defaultValue: '2',
+           description: 'Manual MIG size when autoscaler is OFF')
 
-    booleanParam(name: 'WAIT_STABLE', defaultValue: true, description: 'Wait until MIG is stable at the end')
+    booleanParam(name: 'WAIT_STABLE', defaultValue: true,
+                 description: 'Wait until MIG is stable at the end')
   }
 
   environment {
@@ -30,6 +37,7 @@ pipeline {
   }
 
   stages {
+
     stage('Read Terraform outputs') {
       steps {
         dir("${env.TF_DIR}") {
@@ -42,7 +50,7 @@ pipeline {
       }
     }
 
-    stage('Resolve targets') {
+    stage('Resolve MIG name') {
       steps {
         dir("${env.TF_DIR}") {
           script {
@@ -60,32 +68,53 @@ PY
             ).trim()
 
             env.MIG_NAME = mig
-
-            // export params so /bin/sh can read them safely (set -u)
-            env.SERVICE = params.SERVICE
-            env.REGION  = params.REGION
-            env.MIN     = params.MIN
-            env.MAX     = params.MAX
-            env.SIZE    = params.SIZE
+            env.REGION   = params.REGION
+            env.MIN      = params.MIN
+            env.MAX      = params.MAX
+            env.SIZE     = params.SIZE
 
             echo "SERVICE  = ${params.SERVICE}"
             echo "MODE     = ${params.MODE}"
-            echo "REGION   = ${params.REGION}"
+            echo "REGION   = ${env.REGION}"
             echo "MIG_NAME = ${env.MIG_NAME}"
           }
         }
       }
     }
 
-    stage('Autoscaler ON: set min/max') {
+    stage('Check autoscaler existence') {
+      steps {
+        script {
+          def exists = sh(
+            script: """
+              set +e
+              gcloud compute instance-groups managed describe "${env.MIG_NAME}" \
+                --region "${env.REGION}" \
+                --format="value(autoscaler)"
+            """,
+            returnStdout: true
+          ).trim()
+
+          if (exists) {
+            env.AUTOSCALER_EXISTS = "true"
+            echo "Autoscaler exists."
+          } else {
+            env.AUTOSCALER_EXISTS = "false"
+            echo "Autoscaler does NOT exist."
+          }
+        }
+      }
+    }
+
+    stage('Autoscaler ON') {
       when { expression { params.MODE == 'autoscaler_on' } }
       steps {
         sh '''
           set -eu
-          echo "Enabling autoscaling for ${MIG_NAME} with min=${MIN} max=${MAX}..."
+          echo "Applying autoscaler: min=${MIN} max=${MAX}"
+
           gcloud compute instance-groups managed set-autoscaling "${MIG_NAME}" \
             --region "${REGION}" \
-            --mode on \
             --min-num-replicas "${MIN}" \
             --max-num-replicas "${MAX}" \
             --cool-down-period 60 \
@@ -94,17 +123,29 @@ PY
       }
     }
 
-    stage('Autoscaler OFF: manual size') {
+    stage('Autoscaler OFF + Manual Resize') {
       when { expression { params.MODE == 'autoscaler_off_manual' } }
       steps {
         sh '''
           set -eu
-          echo "Disabling autoscaling for ${MIG_NAME}..."
-          gcloud compute instance-groups managed set-autoscaling "${MIG_NAME}" \
-            --region "${REGION}" \
-            --mode off
 
-          echo "Resizing MIG ${MIG_NAME} to fixed size=${SIZE}..."
+          if gcloud compute instance-groups managed describe "${MIG_NAME}" \
+              --region "${REGION}" \
+              --format="value(autoscaler)" | grep -q .; then
+
+            echo "Deleting autoscaler..."
+            AUTOSCALER_NAME=$(gcloud compute instance-groups managed describe "${MIG_NAME}" \
+              --region "${REGION}" \
+              --format="value(autoscaler.basename())")
+
+            gcloud compute autoscalers delete "${AUTOSCALER_NAME}" \
+              --region "${REGION}" \
+              --quiet
+          else
+            echo "No autoscaler to delete."
+          fi
+
+          echo "Resizing MIG to ${SIZE}..."
           gcloud compute instance-groups managed resize "${MIG_NAME}" \
             --region "${REGION}" \
             --size "${SIZE}"
@@ -112,12 +153,12 @@ PY
       }
     }
 
-    stage('Wait until stable') {
+    stage('Wait Until Stable') {
       when { expression { return params.WAIT_STABLE } }
       steps {
         sh '''
           set -eu
-          echo "Waiting for MIG ${MIG_NAME} to become stable..."
+          echo "Waiting for MIG to become stable..."
           gcloud compute instance-groups managed wait-until "${MIG_NAME}" \
             --region "${REGION}" \
             --stable
@@ -125,16 +166,18 @@ PY
       }
     }
 
-    stage('Verify') {
+    stage('Final Verify') {
       steps {
         sh '''
           set -eu
-          echo "Autoscaling policy (from MIG):"
+          echo "=== FINAL STATUS ==="
+
+          echo "Autoscaler:"
           gcloud compute instance-groups managed describe "${MIG_NAME}" \
             --region "${REGION}" \
-            --format="yaml(autoscaler.autoscalingPolicy,autoscaler.status)"
+            --format="yaml(autoscaler)"
 
-          echo "MIG target size:"
+          echo "Target Size:"
           gcloud compute instance-groups managed describe "${MIG_NAME}" \
             --region "${REGION}" \
             --format="value(targetSize)"
