@@ -1,0 +1,67 @@
+pipeline {
+  agent any
+
+  parameters {
+    choice(
+      name: 'SERVICE',
+      choices: ['orders', 'payments'],
+      description: 'Select service (MIG name prefix)'
+    )
+
+    string(
+      name: 'REGION',
+      defaultValue: 'us-central1',
+      description: 'Region of the regional MIG'
+    )
+
+    booleanParam(
+      name: 'WAIT_STABLE',
+      defaultValue: true,
+      description: 'Wait until MIG is stable'
+    )
+  }
+
+  environment {
+    MIG_NAME = "${params.SERVICE}-mig"
+  }
+
+  stages {
+
+    stage('Disable Autoscaling') {
+      steps {
+        sh '''
+          set -eu
+
+          echo "Checking for existing autoscaler..."
+
+          if gcloud compute instance-groups managed describe ${MIG_NAME} \
+            --region ${REGION} \
+            --format="value(autoscaler)" | grep -q .; then
+
+            echo "Stopping autoscaling (capacity remains unchanged)..."
+
+            gcloud compute instance-groups managed stop-autoscaling ${MIG_NAME} \
+              --region ${REGION}
+
+          else
+            echo "No autoscaler attached. Nothing to disable."
+          fi
+        '''
+      }
+    }
+
+    stage('Wait For Stability') {
+      when {
+        expression { return params.WAIT_STABLE }
+      }
+      steps {
+        sh '''
+          echo "Waiting for MIG to become stable..."
+          gcloud compute instance-groups managed wait-until ${MIG_NAME} \
+            --region ${REGION} \
+            --stable
+        '''
+      }
+    }
+  }
+}

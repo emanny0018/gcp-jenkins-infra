@@ -1,0 +1,91 @@
+pipeline {
+  agent any
+
+  parameters {
+    choice(
+      name: 'SERVICE',
+      choices: ['orders', 'payments'],
+      description: 'Select service (MIG name prefix)'
+    )
+
+    string(
+      name: 'REGION',
+      defaultValue: 'us-central1',
+      description: 'Region of the regional MIG'
+    )
+
+    string(
+      name: 'MIN',
+      defaultValue: '1',
+      description: 'Minimum replicas'
+    )
+
+    string(
+      name: 'MAX',
+      defaultValue: '3',
+      description: 'Maximum replicas'
+    )
+
+    booleanParam(
+      name: 'WAIT_STABLE',
+      defaultValue: true,
+      description: 'Wait until MIG is stable'
+    )
+  }
+
+  environment {
+    MIG_NAME = "${params.SERVICE}-mig"
+  }
+
+  stages {
+
+    stage('Validate Inputs') {
+      steps {
+        script {
+          if (!params.MIN.isInteger() || !params.MAX.isInteger()) {
+            error("MIN and MAX must be integers.")
+          }
+
+          if (params.MIN.toInteger() <= 0) {
+            error("MIN must be greater than 0.")
+          }
+
+          if (params.MAX.toInteger() < params.MIN.toInteger()) {
+            error("MAX cannot be smaller than MIN.")
+          }
+        }
+      }
+    }
+
+    stage('Enable / Update Autoscaling') {
+      steps {
+        sh '''
+          set -eu
+
+          echo "Enabling autoscaling for ${MIG_NAME}..."
+
+          gcloud compute instance-groups managed set-autoscaling ${MIG_NAME} \
+            --region ${REGION} \
+            --min-num-replicas ${MIN} \
+            --max-num-replicas ${MAX} \
+            --target-cpu-utilization 0.6 \
+            --cool-down-period 60
+        '''
+      }
+    }
+
+    stage('Wait For Stability') {
+      when {
+        expression { return params.WAIT_STABLE }
+      }
+      steps {
+        sh '''
+          echo "Waiting for MIG to become stable..."
+          gcloud compute instance-groups managed wait-until ${MIG_NAME} \
+            --region ${REGION} \
+            --stable
+        '''
+      }
+    }
+  }
+}
