@@ -7,14 +7,29 @@ pipeline {
   }
 
   parameters {
-    choice(name: 'SERVICE', choices: ['orders', 'payments', 'users', 'inventory', 'gateway'],
-           description: 'Which service MIG to operate')
-    choice(name: 'ACTION', choices: ['restart', 'replace'],
-           description: 'restart = restart instances, replace = recreate instances from template')
-    string(name: 'REGION', defaultValue: 'us-central1', description: 'Region of the regional MIG')
-    string(name: 'MAX_SURGE', defaultValue: '1', description: 'How many extra instances can be added during action')
-    string(name: 'MAX_UNAVAILABLE', defaultValue: '0', description: 'How many instances can be down at once')
-    booleanParam(name: 'WAIT_STABLE', defaultValue: true, description: 'Wait until MIG is stable at the end')
+    choice(
+      name: 'SERVICE',
+      choices: ['orders', 'payments', 'users', 'inventory', 'gateway'],
+      description: 'Which service MIG to operate'
+    )
+
+    choice(
+      name: 'ACTION',
+      choices: ['restart', 'replace'],
+      description: 'restart = restart instances, replace = recreate instances from template'
+    )
+
+    string(
+      name: 'REGION',
+      defaultValue: 'us-central1',
+      description: 'Region of the regional MIG'
+    )
+
+    booleanParam(
+      name: 'WAIT_STABLE',
+      defaultValue: true,
+      description: 'Wait until MIG is stable at the end'
+    )
   }
 
   environment {
@@ -22,6 +37,7 @@ pipeline {
   }
 
   stages {
+
     stage('Read Terraform outputs') {
       steps {
         dir("${env.TF_DIR}") {
@@ -63,20 +79,16 @@ PY
     }
 
     stage('Rolling action') {
-  steps {
-    script {
-      env.ROLL_ACTION = params.ACTION
+      steps {
+        sh '''
+          set -eu
+          echo "Starting rolling ${ACTION} for ${MIG_NAME}..."
+
+          gcloud compute instance-groups managed rolling-action ${ACTION} "${MIG_NAME}" \
+            --region "${REGION}"
+        '''
+      }
     }
-    sh '''
-      set -eu
-      echo "Starting rolling ${ROLL_ACTION} for ${MIG_NAME}..."
-      gcloud compute instance-groups managed rolling-action ${ROLL_ACTION} "${MIG_NAME}" \
-        --region "${REGION}" \
-        --max-surge "${MAX_SURGE}" \
-        --max-unavailable "${MAX_UNAVAILABLE}"
-    '''
-  }
-}
 
     stage('Wait until stable') {
       when { expression { return params.WAIT_STABLE } }
