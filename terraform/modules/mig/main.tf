@@ -9,10 +9,8 @@ resource "google_compute_firewall" "allow_tomcat_8080" {
     ports    = ["8080"]
   }
 
-  # temporary for testing; we will lock this down later
   source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
 
-  # ONLY instances with this tag get port 8080 opened
   target_tags = ["${var.name}-tomcat"]
 }
 
@@ -28,24 +26,32 @@ resource "google_compute_health_check" "http" {
 resource "google_compute_instance_template" "tpl" {
   name_prefix  = "${var.name}-tpl-"
   machine_type = var.machine_type
+
   disk {
     boot         = true
     auto_delete  = true
     source_image = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts"
-    disk_size_gb  = 20
-    disk_type  = "pd-balanced"
+    disk_size_gb = 20
+    disk_type    = "pd-balanced"
   }
+
   tags = ["${var.name}-tomcat"]
 
   network_interface {
     network    = var.network_self_link
     subnetwork = var.subnetwork_self_link
 
-    # public IP for now so Jenkins/Ansible can reach instances easily
+    # Public IP so Jenkins / Ansible can reach instances
     access_config {}
   }
 
-  # simple marker; Ansible will install Tomcat later
+  # SERVICE ACCOUNT ATTACHED TO VM
+  service_account {
+    email  = "manny-563@flooid-488720.iam.gserviceaccount.com"
+    scopes = ["cloud-platform"]
+  }
+
+  # marker file so we know instance booted
   metadata_startup_script = <<-EOT
     #!/bin/bash
     echo "booted" > /tmp/booted.txt
@@ -91,7 +97,7 @@ resource "google_compute_region_autoscaler" "as" {
     cooldown_period = 60
 
     cpu_utilization {
-      target = 0.60
+      target = 0.80
     }
   }
 }
