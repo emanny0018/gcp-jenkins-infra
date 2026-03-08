@@ -1,0 +1,143 @@
+---
+- name: Install Java and required packages
+  apt:
+    update_cache: yes
+    name:
+      - openjdk-17-jdk
+      - curl
+      - tar
+    state: present
+
+- name: Create tomcat group
+  group:
+    name: tomcat
+    system: yes
+
+- name: Create tomcat user
+  user:
+    name: tomcat
+    group: tomcat
+    shell: /usr/sbin/nologin
+    system: yes
+    create_home: no
+
+- name: Stop Tomcat if running
+  service:
+    name: tomcat
+    state: stopped
+  ignore_errors: yes
+
+- name: Remove stale Tomcat PID file
+  file:
+    path: /opt/tomcat/temp/tomcat.pid
+    state: absent
+
+- name: Remove old extracted Tomcat directory if present
+  file:
+    path: /opt/apache-tomcat-11.0.18
+    state: absent
+
+- name: Remove existing /opt/tomcat if present
+  file:
+    path: /opt/tomcat
+    state: absent
+
+- name: Create /opt/tomcat directory
+  file:
+    path: /opt/tomcat
+    state: directory
+    owner: tomcat
+    group: tomcat
+    mode: "0755"
+
+- name: Download Tomcat
+  get_url:
+    url: https://archive.apache.org/dist/tomcat/tomcat-11/v11.0.18/bin/apache-tomcat-11.0.18.tar.gz
+    dest: /tmp/apache-tomcat.tar.gz
+    mode: "0644"
+
+- name: Extract Tomcat into /opt/tomcat
+  unarchive:
+    src: /tmp/apache-tomcat.tar.gz
+    dest: /opt/tomcat
+    remote_src: yes
+    extra_opts:
+      - --strip-components=1
+
+- name: Ensure Tomcat shell scripts are executable
+  file:
+    path: /opt/tomcat/bin
+    state: directory
+    recurse: yes
+    mode: "0755"
+
+- name: Set Tomcat ownership
+  file:
+    path: /opt/tomcat
+    owner: tomcat
+    group: tomcat
+    recurse: yes
+
+- name: Ensure Tomcat runtime directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: tomcat
+    group: tomcat
+    mode: "0755"
+  loop:
+    - /opt/tomcat/temp
+    - /opt/tomcat/work
+    - /opt/tomcat/logs
+    - /opt/tomcat/conf
+    - /opt/tomcat/webapps
+
+- name: Download orders.war to Jenkins control node from GCS
+  delegate_to: localhost
+  become: false
+  shell: |
+    gcloud storage cp gs://flooid-test/orders.war /tmp/orders.war
+  args:
+    executable: /bin/bash
+
+- name: Remove old exploded orders app directory
+  file:
+    path: /opt/tomcat/webapps/orders
+    state: absent
+  notify:
+    - restart tomcat
+
+- name: Remove old orders.war if present
+  file:
+    path: /opt/tomcat/webapps/orders.war
+    state: absent
+  notify:
+    - restart tomcat
+
+- name: Copy orders.war to target Tomcat webapps
+  copy:
+    src: /tmp/orders.war
+    dest: /opt/tomcat/webapps/orders.war
+    owner: tomcat
+    group: tomcat
+    mode: "0644"
+  notify:
+    - restart tomcat
+
+- name: Install Tomcat systemd service
+  template:
+    src: tomcat.service.j2
+    dest: /etc/systemd/system/tomcat.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart tomcat
+
+- name: Flush handlers so systemd is reloaded before service start
+  meta: flush_handlers
+
+- name: Ensure Tomcat service is enabled and started
+  service:
+    name: tomcat
+    state: started
+    enabled: yes

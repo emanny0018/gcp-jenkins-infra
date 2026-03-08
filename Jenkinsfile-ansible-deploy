@@ -1,0 +1,68 @@
+pipeline {
+    agent any
+
+    environment {
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        GCP_BUCKET = 'flooid-test'
+        WAR_FILE = 'orders.war'
+        INVENTORY = 'ansible/inventory-orders.ini'
+        PLAYBOOK = 'ansible/playbooks/tomcat.yml'
+        APP_URL = 'http://34.121.100.196:8080/orders/'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Verify tools') {
+            steps {
+                sh '''
+                    set -e
+                    which ansible
+                    ansible --version
+                    which gcloud
+                    gcloud --version
+                '''
+            }
+        }
+
+        stage('Verify WAR in GCS') {
+            steps {
+                sh '''
+                    set -e
+                    gcloud storage ls gs://${GCP_BUCKET}/${WAR_FILE}
+                '''
+            }
+        }
+
+        stage('Deploy with Ansible') {
+            steps {
+                sh '''
+                    set -e
+                    ansible-playbook -i ${INVENTORY} ${PLAYBOOK} -b
+                '''
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sh '''
+                    set -e
+                    curl -I --max-time 20 ${APP_URL}
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Orders deployment completed successfully.'
+        }
+        failure {
+            echo 'Orders deployment failed.'
+        }
+    }
+}
